@@ -1,7 +1,11 @@
 -module(ftm_crawler).
 
--compile(export_all).
--export([start/0]).
+-export([start/0,
+        crawl/2,
+        crawl/3,
+        crawl/4,
+        crawl/5
+        ]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -17,73 +21,75 @@
         }).
 
 start() ->
-    start(1,1).
+    crawl(1,1).
 
 %% Actually Number of ?NUM_BLOCKS_PER_FETCH blocks.
 %% i.e. NumberOfBlocks=1000 with ?NUM_BLOCKS_PER_FETCH=100 would mean
 %% a total of 100000 Blocks.
-start(BlockId, NumberOfBlocks) ->
-    make_sure_storage_exist(),
-    crawl(BlockId, NumberOfBlocks).
-
-
 crawl(BlockId, NumberOfBlocks) ->
     crawl(BlockId, NumberOfBlocks, ?NUM_BLOCKS_PER_FETCH).
 
 crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch) ->
-    crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, 1, 1).
+    crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, 1).
 
-crawl(BlockId, NumberOfBlocks, MapSize, ReduceSize) ->
-    crawl(BlockId, NumberOfBlocks, ?NUM_BLOCKS_PER_FETCH, MapSize, ReduceSize).
+crawl(BlockId, NumberOfBlocks, NumBlockPerFetch, MapSize) ->
+    crawl(BlockId, NumberOfBlocks, NumBlockPerFetch, MapSize, 1).
 
-crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, 1, 1) ->
-    BlockIDs = [{BlockId+I*NumBlocksPerFetch, undefined}
+crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, MapSize, _ReduceSize) when NumBlocksPerFetch =< 100 ->
+    make_sure_storage_exist(),
+    BlockIDs = [{BlockId+I*NumBlocksPerFetch, {NumBlocksPerFetch, undefined}}
                 || I <- lists:seq(0, NumberOfBlocks-1)],
-    map_reduce:seq(fun map/2, fun reduce/2, BlockIDs);
+    Res = workers:par(fun map/2, fun reduce/2, BlockIDs, MapSize),
+    mnesia:dump_tables([?BLOCK_TABLE]),
+    Res;
 crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, MapSize, ReduceSize) ->
-    BlockIDs = [{BlockId+I*NumBlocksPerFetch, undefined}
-                || I <- lists:seq(0, NumberOfBlocks-1)],
-    map_reduce:par(fun map/2, MapSize, fun reduce/2, ReduceSize, BlockIDs).
+    io:format("API doesn't allow more than 100 blocks per fetch, currently ~B~n", [NumBlocksPerFetch]),
+    crawl(BlockId, NumberOfBlocks, 100, MapSize, ReduceSize).
+
 
 make_sure_storage_exist() ->
-    mnesia:create_schema([node()]),
-    mnesia:start(),
+    ok = mnesia:start(),
+    case mnesia:create_schema([node()]) of
+        ok -> ok;
+        {error,{_,{already_exists,_}}} -> ok
+    end,
     case mnesia:create_table(?BLOCK_TABLE,
                              [{record_name, block},
                               %% {index, [id]},
                               {attributes, record_info(fields, block)},
-                              {ram_copies, [node()]},
-                              {disc_only_copies, nodes()},
+                              {disc_copies, [node()|nodes()]},
                               {storage_properties, [{ets, [compressed]},
                                                     {dets, [{auto_save, 5000}]}
                                                    ]}
                              ]) of
         {atomic, ok} ->
             ok;
-        {aborted, {already_exists, ftm_block_table}} ->
+        {aborted, {already_exists, ?BLOCK_TABLE}} ->
             ok
-    end.
+    end,
+    mnesia:wait_for_tables(?BLOCK_TABLE, 5000).
 
-map(K, undefined) ->
-    Cache = [catch mnesia:dirty_read(?BLOCK_TABLE, K+I) || I <- lists:seq(0, ?NUM_BLOCKS_PER_FETCH-1)],
+map(K, {NumBlocksPerFetch, undefined}) ->
+    Cache = [catch mnesia:dirty_read(?BLOCK_TABLE, K+I) || I <- lists:seq(0, NumBlocksPerFetch-1)],
     InCache = fun ([]) -> false;
                   ({'EXIT', {aborted, {no_exists, N}}}) ->
-                      ?debugVal(N),
+                      io:format("Table entry did not exist ~p~n", [N]),
                       false;
                   ([_]) -> true
               end,
     case lists:all(InCache, Cache) of
         false ->
-            Bs = fetch_blocks(K, ?NUM_BLOCKS_PER_FETCH),
+            Bs = fetch_blocks(K, NumBlocksPerFetch),
             Ts = [{convert_to_int(maps:get(<<"number">>, B)),
                    maps:get(<<"transactions">>, B, [])}
                   || B <- Bs],
             Ts;
         true ->
+            io:format(user, "Cached ~B blocks starting from ~B~n", [NumBlocksPerFetch, K]),
             [{B#block.id, B#block.transactions} || [B] <- Cache]
     end;
-map(K, V) ->
-    [{K, V}].
+map(K, W) ->
+    [{K, W}].
 
 convert_to_int(<<"0x", B/binary>>) when byte_size(B) rem 2 == 0 ->
     D = binary:decode_hex(B),
@@ -95,7 +101,10 @@ convert_to_int(<<"0x", B/binary>>) when byte_size(B) rem 2 == 1 ->
 reduce(K, Ts) ->
     Contracts = [clean_transaction(T) || T <- Ts, is_contract(T)],
     catch mnesia:dirty_write(?BLOCK_TABLE, #block{id = K, transactions = Contracts}),
-    [{K, Contracts}].
+    case Contracts of
+        [] -> [];
+        C -> [{K, C}]
+    end.
 
 clean_transaction(T) ->
     maps:with([<<"contractAddress">>, <<"from">>, <<"input">>, <<"hash">>], T).
@@ -128,7 +137,7 @@ body(CallId, FromBlock, NumBlocks) ->
 a_test() ->
     Reply = reply(),
     meck:new(httpc),
-    meck:expect(httpc, request, fun (_, R, _, _) -> ?debugVal(R), Reply end),
+    meck:expect(httpc, request, fun (_, MockedCall, _, _) -> ?debugVal(MockedCall), Reply end),
     Exp = [{9509443,
             [#{<<"contractAddress">> =>
                    <<"0xdfd84e3dcd39086a133479f5bc11cf01276cd507">>,
