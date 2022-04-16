@@ -1,0 +1,13 @@
+curl --location
+     --request POST 'https://rpc.ankr.com/multichain' \
+     --header 'Content-Type: application/json' \
+     --data-raw '{
+    "jsonrpc": "2.0",
+    "method": "ankr_getBlocksRange",
+    "params": {
+        "blockchain": "fantom",
+        "fromBlock": 9509443,
+        "toBlock": 9509444
+    },
+    "id": 1
+}'

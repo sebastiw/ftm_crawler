@@ -1,0 +1,11 @@
+{application, ftm_crawler,
+ [{description, "Parallell ftm crawler"},
+  {vsn, "0.0.0"},
+  {applications,
+   [kernel,
+    stdlib,
+    inets,
+    jsx,
+    mnesia
+   ]}
+ ]}.
