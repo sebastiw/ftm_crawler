@@ -1,0 +1,34 @@
+* FTM crawler
+
+Finds all contracts in a range of blocks on Fantom.
+It stores all results in an Mnesia cache.
+
+```
+1> ftm_crawler:crawl().                     % Crawl first block
+[]                                          % Nothing in there
+2> StartingBlock = 30_000_000, NumberOfBlocks = 100_000, NumWorkers = 20.
+3> ftm_crawler:crawl(StartingBlock, NumberOfBlocks, NumWorkers).
+....                                        % Truncated output
+ {30003321,
+  [#{<<"contractAddress">> => <<"0x1a158f156b0b38"...>>,
+     <<"from">> => <<"0x86fdd9980acd3e"...>>,
+     <<"hash">> => <<"0x618b0381ad443c"...>>,
+     <<"input">> => <<"0x60806040523480"...>>}]},
+ {30003399,
+  [#{<<"contractAddr"...>> => <<"0xd02bed96a2"...>>,
+     <<"from">> => <<"0x86fdd9980a"...>>,
+     <<"hash">> => <<"0xd92cf8a82b"...>>,
+     <<"input">> => <<"0x6080604052"...>>}]},
+ {30003423,
+  [#{<<"contract"...>> => <<"0xd18728"...>>,
+     <<"from">> => <<"0x86fdd9"...>>,
+     <<"hash">> => <<"0x7c6e69"...>>,...}]},
+ {30003468,
+  [#{<<"cont"...>> => <<"0x8f"...>>,
+     <<"from">> => <<"0xd9"...>>,...}]},
+ {30003531,[#{<<...>> => <<...>>,...}]},
+ {30003548,[#{...}]},
+ {30003616,[...]},
+ {30003629,...},
+ {...}|...]
+```

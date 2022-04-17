@@ -1,58 +1,45 @@
 -module(ftm_crawler).
 
--export([start/0,
-        crawl/2,
-        crawl/3,
-        crawl/4,
-        crawl/5
+-export([crawl/0,
+         crawl/2,
+         crawl/3
         ]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BLOCK_TABLE, ftm_block_table).
+
+%% Ankr only allows 100 blocks per fetch it seems
 -define(NUM_BLOCKS_PER_FETCH, 100).
 
-
-%% we want to end up in something like
 -record(block,
         {id :: pos_integer(),
          fetched = false :: boolean(),
          transactions :: []
         }).
 
-start() ->
-    crawl(1,1).
+crawl() ->
+    crawl(1, 1).
 
-%% Actually Number of ?NUM_BLOCKS_PER_FETCH blocks.
-%% i.e. NumberOfBlocks=1000 with ?NUM_BLOCKS_PER_FETCH=100 would mean
-%% a total of 100000 Blocks.
+%% Base case is sequential
 crawl(BlockId, NumberOfBlocks) ->
-    crawl(BlockId, NumberOfBlocks, ?NUM_BLOCKS_PER_FETCH).
+    crawl(BlockId, NumberOfBlocks, 1).
 
-crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch) ->
-    crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, 1).
-
-crawl(BlockId, NumberOfBlocks, NumBlockPerFetch, MapSize) ->
-    crawl(BlockId, NumberOfBlocks, NumBlockPerFetch, MapSize, 1).
-
-crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, MapSize, _ReduceSize) when NumBlocksPerFetch =< 100 ->
+crawl(BlockId, NumberOfBlocks, MapSize) when BlockId > 0, NumberOfBlocks > 0, MapSize > 0 ->
     make_sure_storage_exist(),
-    BlockIDs = [{BlockId+I*NumBlocksPerFetch, {NumBlocksPerFetch, undefined}}
-                || I <- lists:seq(0, NumberOfBlocks-1)],
+    NumberOfFetches = erlang:ceil(NumberOfBlocks/?NUM_BLOCKS_PER_FETCH),
+    BlockIDs = [{BlockId+I*?NUM_BLOCKS_PER_FETCH, undefined}
+                || I <- lists:seq(0, NumberOfFetches-1)],
     Res = workers:par(fun map/2, fun reduce/2, BlockIDs, MapSize),
     mnesia:dump_tables([?BLOCK_TABLE]),
-    Res;
-crawl(BlockId, NumberOfBlocks, NumBlocksPerFetch, MapSize, ReduceSize) ->
-    io:format("API doesn't allow more than 100 blocks per fetch, currently ~B~n", [NumBlocksPerFetch]),
-    crawl(BlockId, NumberOfBlocks, 100, MapSize, ReduceSize).
-
+    Res.
 
 make_sure_storage_exist() ->
-    ok = mnesia:start(),
     case mnesia:create_schema([node()]) of
         ok -> ok;
         {error,{_,{already_exists,_}}} -> ok
     end,
+    ok = mnesia:start(),
     case mnesia:create_table(?BLOCK_TABLE,
                              [{record_name, block},
                               %% {index, [id]},
@@ -67,14 +54,12 @@ make_sure_storage_exist() ->
         {aborted, {already_exists, ?BLOCK_TABLE}} ->
             ok
     end,
-    mnesia:wait_for_tables(?BLOCK_TABLE, 5000).
+    ok = mnesia:wait_for_tables([?BLOCK_TABLE], 5000).
 
-map(K, {NumBlocksPerFetch, undefined}) ->
+map(K, undefined) ->
+    NumBlocksPerFetch = ?NUM_BLOCKS_PER_FETCH,
     Cache = [catch mnesia:dirty_read(?BLOCK_TABLE, K+I) || I <- lists:seq(0, NumBlocksPerFetch-1)],
     InCache = fun ([]) -> false;
-                  ({'EXIT', {aborted, {no_exists, N}}}) ->
-                      io:format("Table entry did not exist ~p~n", [N]),
-                      false;
                   ([_]) -> true
               end,
     case lists:all(InCache, Cache) of
@@ -110,6 +95,7 @@ clean_transaction(T) ->
     maps:with([<<"contractAddress">>, <<"from">>, <<"input">>, <<"hash">>], T).
 
 fetch_blocks(FromBlock, NumBlocks) ->
+    %% https://documenter.getpostman.com/view/19024547/UVsEVUGQ
     Url = "https://rpc.ankr.com/multichain",
     Headers = [],
     ContentType = "application/json",
