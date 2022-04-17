@@ -14,7 +14,7 @@
 
 -record(block,
         {id :: pos_integer(),
-         fetched = false :: boolean(),
+         is_reduced = false :: boolean(),
          transactions :: []
         }).
 
@@ -31,7 +31,6 @@ crawl(BlockId, NumberOfBlocks, MapSize) when BlockId > 0, NumberOfBlocks > 0, Ma
     BlockIDs = [{BlockId+I*?NUM_BLOCKS_PER_FETCH, undefined}
                 || I <- lists:seq(0, NumberOfFetches-1)],
     Res = workers:par(fun map/2, fun reduce/2, BlockIDs, MapSize),
-    mnesia:dump_tables([?BLOCK_TABLE]),
     Res.
 
 make_sure_storage_exist() ->
@@ -42,7 +41,7 @@ make_sure_storage_exist() ->
     ok = mnesia:start(),
     case mnesia:create_table(?BLOCK_TABLE,
                              [{record_name, block},
-                              %% {index, [id]},
+                              {index, [id]},
                               {attributes, record_info(fields, block)},
                               {disc_copies, [node()|nodes()]},
                               {storage_properties, [{ets, [compressed]},
@@ -58,7 +57,8 @@ make_sure_storage_exist() ->
 
 map(K, undefined) ->
     NumBlocksPerFetch = ?NUM_BLOCKS_PER_FETCH,
-    Cache = [catch mnesia:dirty_read(?BLOCK_TABLE, K+I) || I <- lists:seq(0, NumBlocksPerFetch-1)],
+    Cache = [mnesia:dirty_read(?BLOCK_TABLE, K+I)
+             || I <- lists:seq(0, NumBlocksPerFetch-1)],
     InCache = fun ([]) -> false;
                   ([_]) -> true
               end,
@@ -68,10 +68,16 @@ map(K, undefined) ->
             Ts = [{convert_to_int(maps:get(<<"number">>, B)),
                    maps:get(<<"transactions">>, B, [])}
                   || B <- Bs],
+            %% Just spawn and save as soon as fetch has happend
+            %% because of resiliency.  Doesn't *really* matter if not
+            %% saved, because then we just need to fetch again.  But
+            %% if we save, then we don't need to fetch it again, just
+            %% reduce it later. It will take up more space until reduced.
+            write_transactions(Ts, false),
             Ts;
         true ->
             io:format(user, "Cached ~B blocks starting from ~B~n", [NumBlocksPerFetch, K]),
-            [{B#block.id, B#block.transactions} || [B] <- Cache]
+            [{B#block.id, B} || [B] <- Cache]
     end;
 map(K, W) ->
     [{K, W}].
@@ -83,9 +89,15 @@ convert_to_int(<<"0x", B/binary>>) when byte_size(B) rem 2 == 0 ->
 convert_to_int(<<"0x", B/binary>>) when byte_size(B) rem 2 == 1 ->
     convert_to_int(<<"0x0", B/binary>>).
 
-reduce(K, Ts) ->
+reduce(K, #block{is_reduced = false, transactions = Ts}) ->
+    reduce(K, Ts);
+reduce(_, #block{is_reduced = true, transactions = []}) ->
+    [];
+reduce(K, #block{is_reduced = true, transactions = Ts}) ->
+    [{K, Ts}];
+reduce(K, Ts) when is_list(Ts) ->
     Contracts = [clean_transaction(T) || T <- Ts, is_contract(T)],
-    catch mnesia:dirty_write(?BLOCK_TABLE, #block{id = K, transactions = Contracts}),
+    write_transactions([{K, Contracts}], true),
     case Contracts of
         [] -> [];
         C -> [{K, C}]
@@ -93,6 +105,20 @@ reduce(K, Ts) ->
 
 clean_transaction(T) ->
     maps:with([<<"contractAddress">>, <<"from">>, <<"input">>, <<"hash">>], T).
+
+write_transactions(Ts, IsReduced) ->
+    spawn(fun () ->
+                  {atomic, _} = mnesia:transaction(
+                                  fun() ->
+                                          [mnesia:write(?BLOCK_TABLE,
+                                                        #block{id = BlockId,
+                                                               is_reduced = IsReduced,
+                                                               transactions = T},
+                                                        write)
+                                           || {BlockId, T} <- Ts]
+                                  end),
+                  mnesia:dump_tables([?BLOCK_TABLE])
+          end).
 
 fetch_blocks(FromBlock, NumBlocks) ->
     %% https://documenter.getpostman.com/view/19024547/UVsEVUGQ
