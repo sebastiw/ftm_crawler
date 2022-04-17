@@ -3,7 +3,7 @@
 Finds all contracts in a range of blocks on Fantom.
 It stores all results in an Mnesia cache.
 
-```
+#+BEGIN_SRC erlang
 1> ftm_crawler:crawl().                     % Crawl first block
 []                                          % Nothing in there
 2> StartingBlock = 30_000_000, NumberOfBlocks = 100_000, NumWorkers = 20.
@@ -32,3 +32,4 @@ It stores all results in an Mnesia cache.
  {30003629,...},
  {...}|...]
 ```
+#+END_SRC
