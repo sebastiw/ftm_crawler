@@ -5,18 +5,11 @@
          crawl/3
         ]).
 
+-include_lib("ftm_crawler/include/ftm.hrl").
 -include_lib("eunit/include/eunit.hrl").
-
--define(BLOCK_TABLE, ftm_block_table).
 
 %% Ankr only allows 100 blocks per fetch it seems
 -define(NUM_BLOCKS_PER_FETCH, 100).
-
--record(block,
-        {id :: pos_integer(),
-         is_reduced = false :: boolean(),
-         transactions :: []
-        }).
 
 crawl() ->
     crawl(1, 1).
@@ -26,34 +19,12 @@ crawl(BlockId, NumberOfBlocks) ->
     crawl(BlockId, NumberOfBlocks, 1).
 
 crawl(BlockId, NumberOfBlocks, MapSize) when BlockId > 0, NumberOfBlocks > 0, MapSize > 0 ->
-    make_sure_storage_exist(),
+    ftm_utils:make_sure_storage_exist(),
     NumberOfFetches = erlang:ceil(NumberOfBlocks/?NUM_BLOCKS_PER_FETCH),
     BlockIDs = [{BlockId+I*?NUM_BLOCKS_PER_FETCH, undefined}
                 || I <- lists:seq(0, NumberOfFetches-1)],
     Res = workers:par(fun map/2, fun reduce/2, BlockIDs, MapSize),
     Res.
-
-make_sure_storage_exist() ->
-    case mnesia:create_schema([node()]) of
-        ok -> ok;
-        {error,{_,{already_exists,_}}} -> ok
-    end,
-    ok = mnesia:start(),
-    case mnesia:create_table(?BLOCK_TABLE,
-                             [{record_name, block},
-                              {index, [id]},
-                              {attributes, record_info(fields, block)},
-                              {disc_copies, [node()|nodes()]},
-                              {storage_properties, [{ets, [compressed]},
-                                                    {dets, [{auto_save, 5000}]}
-                                                   ]}
-                             ]) of
-        {atomic, ok} ->
-            ok;
-        {aborted, {already_exists, ?BLOCK_TABLE}} ->
-            ok
-    end,
-    ok = mnesia:wait_for_tables([?BLOCK_TABLE], 5000).
 
 map(K, undefined) ->
     NumBlocksPerFetch = ?NUM_BLOCKS_PER_FETCH,
